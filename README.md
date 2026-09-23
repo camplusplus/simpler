@@ -4,6 +4,8 @@ A small Raspberry Pi sampler prototype built with C++ and SDL2. The UI is
 designed around an 800x480 display and uses a 400x240 internal render target so
 the pixel-art look stays crisp on small screens.
 
+<img width="850" height="567" alt="Screenshot From 2026-09-23 22-35-42" src="https://github.com/user-attachments/assets/4d90afda-354c-497f-9521-8ab7692765a3" />
+
 ## Controls
 
 - `1` - `8`: trigger a pad
