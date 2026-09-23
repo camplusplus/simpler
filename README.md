@@ -12,6 +12,7 @@ the pixel-art look stays crisp on small screens.
 - `B`: open the sample browser
 - `E`: open the editor for the selected pad
 - `M`: open audio-card and MIDI-input settings
+- `G`: toggle CRT graphics effects on/off; effects start disabled for lower CPU/GPU usage
 - Editor `Tab`: select the START or END trim handle
 - Editor `Left` / `Right`: move the selected trim handle
 - Editor `Ctrl` + arrows: fine 1 ms steps

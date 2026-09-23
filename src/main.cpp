@@ -226,7 +226,7 @@ void drawFrame(SDL_Renderer* renderer, AppState& state, uint32_t now) {
     }
 
     fillRect(renderer, 18, 200, 364, 20, {10, 13, 24, 255});
-    drawText(renderer, "1-8 PLAY   TAB PAGE   B BROWSER E EDIT M MIDI", 25, 207, {127, 146, 177, 255});
+    drawText(renderer, "1-8 PLAY TAB BROWSER E EDIT M MIDI G FX", 25, 207, {127, 146, 177, 255});
     if (state.settingsOpen) {
         fillRect(renderer, 24, 28, 352, 184, {7, 10, 19, 250});
         fillRect(renderer, 28, 32, 344, 16, {45, 55, 82, 255});
@@ -475,6 +475,9 @@ int main(int argc, char** argv) {
                     for (const auto& port : MidiInput::listInputPorts()) {
                         state.midiDevices.push_back(port.name);
                     }
+                } else if (event.key.keysym.sym == SDLK_g && !state.editorOpen &&
+                    !state.browserOpen && !state.settingsOpen) {
+                    state.graphicsEffectsEnabled = !state.graphicsEffectsEnabled;
                 } else if (event.key.keysym.sym == SDLK_ESCAPE && state.timeStretchPopupOpen) {
                     state.voices.samples[state.selectedPad.load()] = state.timeStretchSource;
                     if (!state.undoStack.empty()) state.undoStack.pop_back();
@@ -850,7 +853,9 @@ int main(int argc, char** argv) {
         SDL_GetRendererOutputSize(renderer, &outputWidth, &outputHeight);
         SDL_Rect destination{0, 0, outputWidth, outputHeight};
         SDL_RenderCopy(renderer, lowRes, nullptr, &destination);
-        applyGraphicsEffects(renderer, outputWidth, outputHeight, now);
+        if (state.graphicsEffectsEnabled) {
+            applyGraphicsEffects(renderer, outputWidth, outputHeight, now);
+        }
         SDL_RenderPresent(renderer);
         const uint32_t frameTime = SDL_GetTicks() - lastTick;
         if (frameTime < 16) {

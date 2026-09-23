@@ -51,6 +51,7 @@ struct AppState {
     bool browserOpen = false;
     bool editorOpen = false;
     bool settingsOpen = false;
+    bool graphicsEffectsEnabled = false;
     std::vector<std::string> audioDevices;
     size_t audioDeviceSelection = 0;
     size_t midiDeviceSelection = 0;
