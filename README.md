@@ -4,12 +4,11 @@ A small Raspberry Pi sampler prototype built with C++ and SDL2. The UI is
 designed around an 800x480 display and uses a 400x240 internal render target so
 the pixel-art look stays crisp on small screens.
 
-<img width="850" height="567" alt="Screenshot From 2026-09-23 22-35-42" src="https://github.com/user-attachments/assets/4d90afda-354c-497f-9521-8ab7692765a3" />
-
 ## Controls
 
 - `1` - `8`: trigger a pad
 - `Tab`: switch between the two eight-pad pages
+- MIDI note input: trigger pads using the TR-style drum map below
 - `B`: open the sample browser
 - `E`: open the editor for the selected pad
 - Editor `Tab`: select the START or END trim handle
@@ -107,10 +106,45 @@ default or file-loaded version.
 ## Build on Raspberry Pi OS
 
 ```sh
-sudo apt install build-essential cmake pkg-config libgl-dev libsdl2-dev libsdl2-mixer-dev
+sudo apt install build-essential cmake pkg-config libasound2-dev libsdl2-dev libsdl2-mixer-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j2
 ./build/simpler_sampler
+```
+
+### MIDI note map
+
+The MIDI input uses ALSA Sequencer. Connect a controller or DAW to the
+application's `MIDI In` port with `aconnect`. Pad notes are:
+
+| Pad | MIDI note | TR-style instrument |
+|---:|---:|---|
+| 1 | 36 | Bass drum |
+| 2 | 38 | Snare drum |
+| 3 | 43 | Low tom |
+| 4 | 47 | Mid tom |
+| 5 | 50 | High tom |
+| 6 | 37 | Rim shot |
+| 7 | 39 | Clap |
+| 8 | 42 | Closed hi-hat |
+| 9 | 46 | Open hi-hat |
+| 10 | 49 | Crash cymbal |
+| 11 | 51 | Ride cymbal |
+| 12 | 44 | Pedal hi-hat |
+| 13 | 41 | Low floor tom |
+| 14 | 45 | Low tom 2 |
+| 15 | 48 | Hi-mid tom |
+| 16 | 52 | China/extra cymbal |
+
+The first eleven notes follow the common Roland TR drum layout; the remaining
+five continue with standard percussion notes so all 16 pads have unique
+triggers. MIDI note-on velocity is currently used only as a trigger gate.
+
+To find the application's ALSA port:
+
+```sh
+aconnect -l
+aconnect <controller-client>:<port> <simpler-client>:<port>
 ```
 
 ## Build an AppImage
@@ -124,7 +158,8 @@ for ARM64/ARMHF deployment, or on an Orange Pi for its native architecture.
 Install the build prerequisites, including `curl`:
 
 ```sh
-sudo apt install build-essential cmake pkg-config curl libsdl2-dev libsdl2-mixer-dev
+sudo apt install build-essential cmake pkg-config curl libasound2-dev \
+    libsdl2-dev libsdl2-mixer-dev
 chmod +x packaging/build-appimage.sh
 packaging/build-appimage.sh
 ```

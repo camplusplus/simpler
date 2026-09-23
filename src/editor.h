@@ -46,6 +46,7 @@ private:
 struct AppState {
     std::atomic<bool> running{true};
     std::atomic<int> selectedPad{0};
+    std::atomic<uint32_t> midiTriggers{0};
     int page = 0;
     bool browserOpen = false;
     bool editorOpen = false;

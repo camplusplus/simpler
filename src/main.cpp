@@ -3,6 +3,7 @@
 #include "editor.h"
 #include "effects.h"
 #include "graphics_effects.h"
+#include "midi.h"
 
 #include <algorithm>
 #include <array>
@@ -354,6 +355,8 @@ int main(int argc, char** argv) {
     AppState state;
     loadSamples(state, argc, argv);
     Mix_SetPostMix(postMixCallback, &state);
+    MidiInput midiInput(state);
+    midiInput.start();
 
     uint32_t lastTick = SDL_GetTicks();
     while (state.running.load()) {
@@ -722,6 +725,12 @@ int main(int argc, char** argv) {
         }
 
         const uint32_t now = SDL_GetTicks();
+        const uint32_t midiTriggers = state.midiTriggers.exchange(0);
+        for (int pad = 0; pad < kPadCount; ++pad) {
+            if ((midiTriggers & (1u << pad)) != 0) {
+                triggerPad(state, pad);
+            }
+        }
         SDL_SetRenderTarget(renderer, lowRes);
         drawFrame(renderer, state, now);
         SDL_SetRenderTarget(renderer, nullptr);
@@ -741,6 +750,7 @@ int main(int argc, char** argv) {
     }
 
     Mix_SetPostMix(nullptr, nullptr);
+    midiInput.stop();
     Mix_CloseAudio();
     Mix_Quit();
     SDL_DestroyTexture(lowRes);
