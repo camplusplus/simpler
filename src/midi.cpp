@@ -47,6 +47,56 @@ bool MidiInput::start() {
     return true;
 }
 
+std::vector<MidiPortInfo> MidiInput::listInputPorts() {
+    std::vector<MidiPortInfo> ports;
+    snd_seq_t* seq = nullptr;
+    if (snd_seq_open(&seq, "default", SND_SEQ_OPEN_DUPLEX, 0) < 0) return ports;
+    snd_seq_client_info_t* clientInfo;
+    snd_seq_client_info_alloca(&clientInfo);
+    snd_seq_client_info_set_client(clientInfo, -1);
+    while (snd_seq_query_next_client(seq, clientInfo) >= 0) {
+        const int client = snd_seq_client_info_get_client(clientInfo);
+        snd_seq_port_info_t* portInfo;
+        snd_seq_port_info_alloca(&portInfo);
+        snd_seq_port_info_set_client(portInfo, client);
+        snd_seq_port_info_set_port(portInfo, -1);
+        while (snd_seq_query_next_port(seq, portInfo) >= 0) {
+            const unsigned capability = snd_seq_port_info_get_capability(portInfo);
+            if ((capability & SND_SEQ_PORT_CAP_READ) != 0
+                && (capability & SND_SEQ_PORT_CAP_SUBS_READ) != 0) {
+                ports.push_back({client, snd_seq_port_info_get_port(portInfo),
+                    std::string(snd_seq_client_info_get_name(clientInfo)) + " / "
+                    + snd_seq_port_info_get_name(portInfo)});
+            }
+        }
+    }
+    snd_seq_close(seq);
+    return ports;
+}
+
+bool MidiInput::connect(const MidiPortInfo& port) {
+    if (sequencer_ == nullptr) return false;
+    snd_seq_addr_t source{static_cast<unsigned char>(port.client),
+        static_cast<unsigned char>(port.port)};
+    snd_seq_addr_t destination{static_cast<unsigned char>(
+        snd_seq_client_id(sequencer_)), 0};
+    snd_seq_port_subscribe_t* subscription;
+    snd_seq_port_subscribe_alloca(&subscription);
+    snd_seq_port_subscribe_set_sender(subscription, &source);
+    snd_seq_port_subscribe_set_dest(subscription, &destination);
+    snd_seq_port_subscribe_set_queue(subscription, 1);
+    snd_seq_port_subscribe_set_time_update(subscription, 1);
+    snd_seq_port_subscribe_set_time_real(subscription, 1);
+    return snd_seq_subscribe_port(sequencer_, subscription) >= 0;
+}
+
+bool MidiInput::connectIndex(size_t index) {
+    if (ports_.empty()) {
+        ports_ = listInputPorts();
+    }
+    return index < ports_.size() && connect(ports_[index]);
+}
+
 void MidiInput::stop() {
     if (!running_.exchange(false)) {
         return;

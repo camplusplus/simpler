@@ -186,7 +186,31 @@ void drawFrame(SDL_Renderer* renderer, AppState& state, uint32_t now) {
     }
 
     fillRect(renderer, 18, 200, 364, 20, {10, 13, 24, 255});
-    drawText(renderer, "1-8 PLAY   TAB PAGE   B BROWSER E EDIT", 25, 207, {127, 146, 177, 255});
+    drawText(renderer, "1-8 PLAY   TAB PAGE   B BROWSER E EDIT M MIDI", 25, 207, {127, 146, 177, 255});
+    if (state.settingsOpen) {
+        fillRect(renderer, 24, 28, 352, 184, {7, 10, 19, 250});
+        fillRect(renderer, 28, 32, 344, 16, {45, 55, 82, 255});
+        drawText(renderer, "AUDIO / MIDI SETTINGS", 38, 37, {158, 220, 255, 255});
+        drawText(renderer, "AUDIO OUTPUT", 38, 60, {92, 211, 143, 255});
+        for (size_t i = 0; i < std::min<size_t>(state.audioDevices.size(), 4); ++i) {
+            const int y = 76 + static_cast<int>(i) * 16;
+            drawText(renderer, (i == state.audioDeviceSelection ? "> " : "  ")
+                + state.audioDevices[i].substr(0, 34), 38, y,
+                i == state.audioDeviceSelection ? SDL_Color{245, 157, 76, 255}
+                    : SDL_Color{180, 190, 210, 255});
+        }
+        drawText(renderer, "MIDI INPUT", 205, 60, {92, 211, 143, 255});
+        for (size_t i = 0; i < std::min<size_t>(state.midiDevices.size(), 4); ++i) {
+            const int y = 76 + static_cast<int>(i) * 16;
+            drawText(renderer, (i == state.midiDeviceSelection ? "> " : "  ")
+                + state.midiDevices[i].substr(0, 20), 205, y,
+                i == state.midiDeviceSelection ? SDL_Color{245, 157, 76, 255}
+                    : SDL_Color{180, 190, 210, 255});
+        }
+        drawText(renderer, "TAB AUDIO/MIDI  UP/DOWN SELECT", 38, 178, {180, 190, 210, 255});
+        drawText(renderer, "ENTER APPLY  ESC CLOSE", 38, 194, {245, 157, 76, 255});
+        return;
+    }
     if (state.browserOpen) {
         fillRect(renderer, 24, 28, 352, 184, {7, 10, 19, 250});
         fillRect(renderer, 28, 32, 344, 16, {45, 55, 82, 255});
@@ -354,9 +378,17 @@ int main(int argc, char** argv) {
     }
     AppState state;
     loadSamples(state, argc, argv);
+    for (int i = 0; i < SDL_GetNumAudioDevices(0); ++i) {
+        const char* name = SDL_GetAudioDeviceName(i, 0);
+        if (name != nullptr) state.audioDevices.emplace_back(name);
+    }
     Mix_SetPostMix(postMixCallback, &state);
     MidiInput midiInput(state);
     midiInput.start();
+    const auto midiPorts = MidiInput::listInputPorts();
+    for (const auto& port : midiPorts) {
+        state.midiDevices.push_back(port.name);
+    }
 
     uint32_t lastTick = SDL_GetTicks();
     while (state.running.load()) {
@@ -365,7 +397,45 @@ int main(int argc, char** argv) {
             if (event.type == SDL_QUIT) {
                 state.running.store(false);
             } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
-                if (event.key.keysym.sym == SDLK_ESCAPE && state.timeStretchPopupOpen) {
+                if (state.settingsOpen && event.key.keysym.sym == SDLK_ESCAPE) {
+                    state.settingsOpen = false;
+                } else if (state.settingsOpen && event.key.keysym.sym == SDLK_TAB) {
+                    state.settingsMidiFocus = !state.settingsMidiFocus;
+                } else if (state.settingsOpen && (event.key.keysym.sym == SDLK_UP ||
+                    event.key.keysym.sym == SDLK_DOWN)) {
+                    const int direction = event.key.keysym.sym == SDLK_UP ? -1 : 1;
+                    if (state.settingsMidiFocus && !state.midiDevices.empty()) {
+                        const int count = static_cast<int>(state.midiDevices.size());
+                        state.midiDeviceSelection = static_cast<size_t>(
+                            (static_cast<int>(state.midiDeviceSelection) + direction + count) % count);
+                    } else if (!state.audioDevices.empty()) {
+                        const int count = static_cast<int>(state.audioDevices.size());
+                        state.audioDeviceSelection = static_cast<size_t>(
+                            (static_cast<int>(state.audioDeviceSelection) + direction + count) % count);
+                    }
+                } else if (state.settingsOpen && event.key.keysym.sym == SDLK_RETURN) {
+                    if (state.settingsMidiFocus) {
+                        midiInput.connectIndex(state.midiDeviceSelection);
+                    } else if (!state.audioDevices.empty()) {
+                        Mix_PauseAudio(1);
+                        Mix_SetPostMix(nullptr, nullptr);
+                        Mix_CloseAudio();
+                        if (Mix_OpenAudioDevice(44100, AUDIO_F32SYS, 2, 256, 
+                                state.audioDevices[state.audioDeviceSelection].c_str(), 0) < 0) {
+                            std::fprintf(stderr, "Audio device failed: %s\n", Mix_GetError());
+                        }
+                        Mix_SetPostMix(postMixCallback, &state);
+                        Mix_PauseAudio(0);
+                    }
+                } else if (event.key.keysym.sym == SDLK_m && !state.editorOpen &&
+                    !state.browserOpen && !state.settingsOpen) {
+                    state.settingsOpen = true;
+                    state.settingsMidiFocus = false;
+                    state.midiDevices.clear();
+                    for (const auto& port : MidiInput::listInputPorts()) {
+                        state.midiDevices.push_back(port.name);
+                    }
+                } else if (event.key.keysym.sym == SDLK_ESCAPE && state.timeStretchPopupOpen) {
                     state.voices.samples[state.selectedPad.load()] = state.timeStretchSource;
                     if (!state.undoStack.empty()) state.undoStack.pop_back();
                     state.timeStretchPopupOpen = false;

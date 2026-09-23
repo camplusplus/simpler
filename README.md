@@ -11,6 +11,7 @@ the pixel-art look stays crisp on small screens.
 - MIDI note input: trigger pads using the TR-style drum map below
 - `B`: open the sample browser
 - `E`: open the editor for the selected pad
+- `M`: open audio-card and MIDI-input settings
 - Editor `Tab`: select the START or END trim handle
 - Editor `Left` / `Right`: move the selected trim handle
 - Editor `Ctrl` + arrows: fine 1 ms steps
@@ -146,6 +147,11 @@ To find the application's ALSA port:
 aconnect -l
 aconnect <controller-client>:<port> <simpler-client>:<port>
 ```
+
+The `M` settings screen lists SDL audio output devices and ALSA MIDI input
+ports. Use `Tab` to switch between the two lists, `Up`/`Down` to select a
+device, and `Enter` to apply. Changing the audio device briefly restarts the
+audio stream; choosing a MIDI port subscribes the sampler to that ALSA source.
 
 ## Build an AppImage
 

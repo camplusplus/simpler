@@ -50,6 +50,12 @@ struct AppState {
     int page = 0;
     bool browserOpen = false;
     bool editorOpen = false;
+    bool settingsOpen = false;
+    std::vector<std::string> audioDevices;
+    size_t audioDeviceSelection = 0;
+    size_t midiDeviceSelection = 0;
+    std::vector<std::string> midiDevices;
+    bool settingsMidiFocus = false;
     bool echoPopupOpen = false;
     Sample echoSource;
     bool flangerPopupOpen = false;
