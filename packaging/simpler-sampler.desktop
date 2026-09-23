@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Simpler Sampler
+Comment=Compact 16-pad audio sampler
+Exec=simpler_sampler
+Icon=simpler-sampler
+Categories=AudioVideo;Audio;
+Terminal=false

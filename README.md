@@ -77,8 +77,9 @@ the pixel-art look stays crisp on small screens.
 
 Each of the 16 pads starts with the original built-in generated sound, so the
 sampler works without any files. Samples can then be loaded into either
-eight-pad page from
-normal audio files. Put files named `1.wav` through `16.wav` in `samples/`, or
+eight-pad page from normal audio files. The in-app browser uses
+`~/simpler/` and creates that folder automatically if it does not exist. Put
+files named `1.wav` through `16.wav` there, or
 pass up to sixteen paths on the command line:
 
 ```sh

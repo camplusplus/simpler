@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -65,6 +66,30 @@ bool loadSample(const std::string& path, Sample& destination) {
     return true;
 }
 
+std::filesystem::path userSampleDirectory() {
+    const char* home = std::getenv("HOME");
+    if (home == nullptr || *home == '\0') {
+        return {};
+    }
+    return std::filesystem::path(home) / "simpler";
+}
+
+bool ensureUserSampleDirectory(std::filesystem::path& directory) {
+    directory = userSampleDirectory();
+    if (directory.empty()) {
+        std::fprintf(stderr, "Sample directory unavailable: HOME is not set\n");
+        return false;
+    }
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        std::fprintf(stderr, "Could not create sample directory '%s': %s\n",
+            directory.c_str(), error.message().c_str());
+        return false;
+    }
+    return true;
+}
+
 void loadSamples(AppState& state, int argc, char** argv) {
     for (int i = 0; i < kPadCount; ++i) {
         state.voices.samples[i].name = kPads[i].fallbackName;
@@ -76,9 +101,17 @@ void loadSamples(AppState& state, int argc, char** argv) {
             path = argv[i + 1];
         } else {
             for (const char* extension : {".wav", ".ogg", ".mp3", ".flac"}) {
-                const std::string candidate = "samples/" + std::to_string(i + 1) + extension;
-                if (std::filesystem::exists(candidate)) {
-                    path = candidate;
+                const std::string filename = std::to_string(i + 1) + extension;
+                const std::filesystem::path userDirectory = userSampleDirectory();
+                const std::filesystem::path userCandidate = userDirectory / filename;
+                const std::filesystem::path projectCandidate =
+                    std::filesystem::path("samples") / filename;
+                if (std::filesystem::exists(userCandidate)) {
+                    path = userCandidate.string();
+                    break;
+                }
+                if (std::filesystem::exists(projectCandidate)) {
+                    path = projectCandidate.string();
                     break;
                 }
             }
@@ -91,14 +124,21 @@ void loadSamples(AppState& state, int argc, char** argv) {
 
 void refreshBrowser(AppState& state) {
     state.browserFiles.clear();
-    if (std::filesystem::exists("samples")) {
-        for (const auto& entry : std::filesystem::directory_iterator("samples")) {
+    std::filesystem::path sampleDirectory;
+    if (ensureUserSampleDirectory(sampleDirectory)) {
+        std::error_code error;
+        std::filesystem::directory_iterator entries(sampleDirectory, error);
+        for (const auto& entry : entries) {
             if (entry.is_regular_file()) {
                 const auto extension = entry.path().extension().string();
                 if (extension == ".wav" || extension == ".ogg" || extension == ".mp3" || extension == ".flac") {
                     state.browserFiles.push_back(entry.path().string());
                 }
             }
+        }
+        if (error) {
+            std::fprintf(stderr, "Could not read sample directory '%s': %s\n",
+                sampleDirectory.c_str(), error.message().c_str());
         }
     }
     std::sort(state.browserFiles.begin(), state.browserFiles.end());
