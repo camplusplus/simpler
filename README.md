@@ -12,7 +12,10 @@ the pixel-art look stays crisp on small screens.
 - `B`: open the sample browser
 - `E`: open the editor for the selected pad
 - `M`: open audio-card and MIDI-input settings
+- `K`: open the kit manager
 - `G`: toggle CRT graphics effects on/off; effects start disabled for lower CPU/GPU usage
+- Touch/mouse: use the large on-screen buttons for Browser, Editor, Settings,
+  Kit, and FX; tap pads directly to play them
 - Editor `Tab`: select the START or END trim handle
 - Editor `Left` / `Right`: move the selected trim handle
 - Editor `Ctrl` + arrows: fine 1 ms steps
@@ -154,6 +157,20 @@ The `M` settings screen lists SDL audio output devices and ALSA MIDI input
 ports. Use `Tab` to switch between the two lists, `Up`/`Down` to select a
 device, and `Enter` to apply. Changing the audio device briefly restarts the
 audio stream; choosing a MIDI port subscribes the sampler to that ALSA source.
+
+The application is touch-first at 800x480. Browser rows can be tapped to
+select and the Load button applies the selection. Kit rows can be tapped,
+with Save and Load buttons. Effect popups provide Preview, Apply, Cancel, and
+tap-on-left/tap-on-right parameter controls. Keyboard shortcuts remain
+available as optional fallbacks.
+
+## Kits
+
+Press `K` to open the kit manager. Kits are stored in `~/simpler/kits/` as
+directories containing `1.wav` through `16.wav`. Use `Up`/`Down` to select a
+kit, `S` to save the current edited pad samples, and `Enter` to load the
+selected kit. The default first kit is named `kit1`; additional kit folders
+can be created outside the application and appear when the manager is opened.
 
 ## Build an AppImage
 

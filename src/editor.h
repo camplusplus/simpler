@@ -51,6 +51,9 @@ struct AppState {
     bool browserOpen = false;
     bool editorOpen = false;
     bool settingsOpen = false;
+    bool kitOpen = false;
+    std::vector<std::string> kitNames;
+    size_t kitSelection = 0;
     bool graphicsEffectsEnabled = false;
     std::vector<std::string> audioDevices;
     size_t audioDeviceSelection = 0;

@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -88,6 +89,125 @@ bool ensureUserSampleDirectory(std::filesystem::path& directory) {
         return false;
     }
     return true;
+}
+
+std::filesystem::path kitDirectory(const std::string& name) {
+    const std::filesystem::path root = userSampleDirectory();
+    return root.empty() ? std::filesystem::path{} : root / "kits" / name;
+}
+
+void refreshKits(AppState& state) {
+    state.kitNames.clear();
+    const std::filesystem::path root = userSampleDirectory() / "kits";
+    std::error_code error;
+    std::filesystem::create_directories(root, error);
+    if (error) {
+        std::fprintf(stderr, "Could not create kit directory '%s': %s\n",
+            root.c_str(), error.message().c_str());
+        return;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(root, error)) {
+        if (entry.is_directory()) {
+            state.kitNames.push_back(entry.path().filename().string());
+        }
+    }
+    std::sort(state.kitNames.begin(), state.kitNames.end());
+    if (state.kitNames.empty()) {
+        state.kitNames.push_back("kit1");
+    }
+    state.kitSelection = std::min(state.kitSelection, state.kitNames.size() - 1);
+}
+
+bool saveKit(const AppState& state, const std::string& name) {
+    const std::filesystem::path directory = kitDirectory(name);
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error) {
+        std::fprintf(stderr, "Could not create kit '%s': %s\n", directory.c_str(),
+            error.message().c_str());
+        return false;
+    }
+    const auto write16 = [](std::ofstream& file, uint16_t value) {
+        file.put(static_cast<char>(value & 0xff));
+        file.put(static_cast<char>((value >> 8) & 0xff));
+    };
+    const auto write32 = [](std::ofstream& file, uint32_t value) {
+        for (int shift = 0; shift < 32; shift += 8) {
+            file.put(static_cast<char>((value >> shift) & 0xff));
+        }
+    };
+    for (int pad = 0; pad < kPadCount; ++pad) {
+        const auto& sample = state.voices.samples[pad].stereo;
+        const std::filesystem::path path = directory / (std::to_string(pad + 1) + ".wav");
+        const uint32_t dataSize = static_cast<uint32_t>(
+            sample.size() * sizeof(float));
+        std::ofstream file(path, std::ios::binary);
+        if (!file) {
+            std::fprintf(stderr, "Could not save '%s'\n", path.c_str());
+            return false;
+        }
+        file.write("RIFF", 4);
+        write32(file, 36 + dataSize);
+        file.write("WAVEfmt ", 8);
+        write32(file, 16);
+        write16(file, 3); // IEEE float
+        write16(file, 2);
+        write32(file, 44100);
+        write32(file, 44100 * 2 * sizeof(float));
+        write16(file, 2 * sizeof(float));
+        write16(file, 32);
+        file.write("data", 4);
+        write32(file, dataSize);
+        file.write(reinterpret_cast<const char*>(sample.data()), dataSize);
+        if (!file) {
+            std::fprintf(stderr, "Could not finish saving '%s'\n", path.c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+bool createKit(AppState& state) {
+    const std::filesystem::path root = userSampleDirectory() / "kits";
+    std::error_code error;
+    std::filesystem::create_directories(root, error);
+    if (error) {
+        std::fprintf(stderr, "Could not create kit directory '%s': %s\n",
+            root.c_str(), error.message().c_str());
+        return false;
+    }
+    std::string name;
+    for (int index = 1; index <= 999; ++index) {
+        const std::string candidate = "kit" + std::to_string(index);
+        if (!std::filesystem::exists(root / candidate)) {
+            name = candidate;
+            break;
+        }
+    }
+    if (name.empty() || !std::filesystem::create_directory(root / name, error)) {
+        std::fprintf(stderr, "Could not create a new kit in '%s'\n", root.c_str());
+        return false;
+    }
+    refreshKits(state);
+    const auto found = std::find(state.kitNames.begin(), state.kitNames.end(), name);
+    if (found != state.kitNames.end()) {
+        state.kitSelection = static_cast<size_t>(std::distance(state.kitNames.begin(), found));
+    }
+    return true;
+}
+
+bool loadKit(AppState& state, const std::string& name) {
+    const std::filesystem::path directory = kitDirectory(name);
+    bool loaded = false;
+    for (int pad = 0; pad < kPadCount; ++pad) {
+        const std::filesystem::path path = directory / (std::to_string(pad + 1) + ".wav");
+        if (std::filesystem::exists(path)
+            && loadSample(path.string(), state.voices.samples[pad])) {
+            loaded = true;
+        }
+    }
+    state.undoStack.clear();
+    return loaded;
 }
 
 void loadSamples(AppState& state, int argc, char** argv) {
@@ -225,8 +345,35 @@ void drawFrame(SDL_Renderer* renderer, AppState& state, uint32_t now) {
         drawText(renderer, label.substr(0, 16), x + 9, y + 39, {220, 226, 240, 255});
     }
 
-    fillRect(renderer, 18, 200, 364, 20, {10, 13, 24, 255});
-    drawText(renderer, "1-8 PLAY TAB BROWSER E EDIT M MIDI G FX", 25, 207, {127, 146, 177, 255});
+    const std::array<std::pair<const char*, int>, 5> actions{{
+        {"BROWSER", 18}, {"EDITOR", 91}, {"SETTINGS", 164}, {"KIT", 237}, {"FX", 310}
+    }};
+    for (const auto& [label, x] : actions) {
+        fillRect(renderer, x, 198, label == std::string("SETTINGS") ? 68 : 66, 24,
+            {33, 39, 61, 255});
+        drawText(renderer, label, x + 5, 207, {158, 220, 255, 255});
+    }
+    if (state.kitOpen) {
+        fillRect(renderer, 18, 42, 364, 166, {7, 10, 19, 255});
+        fillRect(renderer, 22, 46, 356, 16, {45, 55, 82, 255});
+        drawText(renderer, "KIT MANAGER", 32, 51, {158, 220, 255, 255});
+        for (size_t i = 0; i < std::min<size_t>(state.kitNames.size(), 6); ++i) {
+            const int y = 76 + static_cast<int>(i) * 16;
+            drawText(renderer, (i == state.kitSelection ? "> " : "  ")
+                + state.kitNames[i].substr(0, 25), 58, y,
+                i == state.kitSelection ? SDL_Color{245, 157, 76, 255}
+                    : SDL_Color{180, 190, 210, 255});
+        }
+        fillRect(renderer, 22, 190, 82, 18, {33, 76, 68, 255});
+        fillRect(renderer, 110, 190, 82, 18, {45, 55, 82, 255});
+        fillRect(renderer, 198, 190, 82, 18, {33, 55, 76, 255});
+        fillRect(renderer, 286, 190, 92, 18, {76, 45, 45, 255});
+        drawText(renderer, "SAVE", 44, 197, {158, 220, 255, 255});
+        drawText(renderer, "LOAD", 132, 197, {158, 220, 255, 255});
+        drawText(renderer, "NEW", 225, 197, {158, 220, 255, 255});
+        drawText(renderer, "CLOSE", 307, 197, {245, 157, 76, 255});
+        return;
+    }
     if (state.settingsOpen) {
         fillRect(renderer, 24, 28, 352, 184, {7, 10, 19, 250});
         fillRect(renderer, 28, 32, 344, 16, {45, 55, 82, 255});
@@ -247,8 +394,10 @@ void drawFrame(SDL_Renderer* renderer, AppState& state, uint32_t now) {
                 i == state.midiDeviceSelection ? SDL_Color{245, 157, 76, 255}
                     : SDL_Color{180, 190, 210, 255});
         }
-        drawText(renderer, "TAB AUDIO/MIDI  UP/DOWN SELECT", 38, 178, {180, 190, 210, 255});
-        drawText(renderer, "ENTER APPLY  ESC CLOSE", 38, 194, {245, 157, 76, 255});
+        fillRect(renderer, 30, 176, 165, 28, {33, 76, 68, 255});
+        fillRect(renderer, 205, 176, 165, 28, {76, 45, 45, 255});
+        drawText(renderer, "APPLY SELECTED", 42, 184, {158, 220, 255, 255});
+        drawText(renderer, "CLOSE", 266, 184, {245, 157, 76, 255});
         return;
     }
     if (state.browserOpen) {
@@ -270,7 +419,10 @@ void drawFrame(SDL_Renderer* renderer, AppState& state, uint32_t now) {
                     40, y, color);
             }
         }
-        drawText(renderer, "UP/DOWN SELECT  ENTER LOAD  ESC CLOSE", 36, 198, {127, 146, 177, 255});
+        fillRect(renderer, 34, 190, 150, 18, {33, 39, 61, 255});
+        fillRect(renderer, 210, 190, 150, 18, {33, 39, 61, 255});
+        drawText(renderer, "LOAD SELECTED", 48, 197, {158, 220, 255, 255});
+        drawText(renderer, "CLOSE", 266, 197, {158, 220, 255, 255});
     }
     if (state.editorOpen) {
         const auto& sample = state.voices.samples[state.selectedPad.load()].stereo;
@@ -292,94 +444,98 @@ void drawFrame(SDL_Renderer* renderer, AppState& state, uint32_t now) {
         }
         drawText(renderer, state.editorAdjustEnd ? "END SELECTED  TAB START" : "START SELECTED  TAB END",
             34, 144, {92, 211, 143, 255});
-        drawText(renderer, "ARROWS MOVE  CTRL 1MS  SHIFT 100MS", 34, 158, {180, 190, 210, 255});
-        drawText(renderer, "Z SNAP ZERO  [ START SILENCE  ] END SILENCE", 34, 172, {180, 190, 210, 255});
-        drawText(renderer, "T TRIM  N NORMAL  I FADE IN  V FADE OUT", 34, 186, {180, 190, 210, 255});
-        drawText(renderer, "E ECHO  L FLANGER  C COMPRESS", 34, 200, {180, 190, 210, 255});
-        drawText(renderer, "O DISTORT  U UNDO", 34, 214, {180, 190, 210, 255});
-        if (!state.echoPopupOpen) {
-            drawText(renderer, "TIME " + std::to_string(state.echoTimeMs) + "MS POWER " +
-                std::to_string(state.echoPower).substr(0, 4), 205, 200,
-                {92, 211, 143, 255});
-        }
+        fillRect(renderer, 30, 156, 164, 18, {33, 39, 61, 255});
+        fillRect(renderer, 204, 156, 166, 18, {33, 39, 61, 255});
+        drawText(renderer, "MOVE START", 56, 162, {158, 220, 255, 255});
+        drawText(renderer, "MOVE END", 240, 162, {158, 220, 255, 255});
+        fillRect(renderer, 30, 176, 80, 18, {33, 39, 61, 255});
+        fillRect(renderer, 112, 176, 80, 18, {33, 39, 61, 255});
+        fillRect(renderer, 194, 176, 80, 18, {33, 39, 61, 255});
+        fillRect(renderer, 276, 176, 94, 18, {33, 39, 61, 255});
+        drawText(renderer, "TRIM", 52, 182, {158, 220, 255, 255});
+        drawText(renderer, "NORMAL", 122, 182, {158, 220, 255, 255});
+        drawText(renderer, "FADE IN", 220, 182, {158, 220, 255, 255});
+        drawText(renderer, "FADE OUT", 300, 182, {158, 220, 255, 255});
+        fillRect(renderer, 30, 196, 84, 18, {33, 39, 61, 255});
+        fillRect(renderer, 118, 196, 84, 18, {33, 39, 61, 255});
+        fillRect(renderer, 206, 196, 84, 18, {33, 39, 61, 255});
+        fillRect(renderer, 294, 196, 76, 18, {33, 39, 61, 255});
+        drawText(renderer, "ECHO", 48, 202, {158, 220, 255, 255});
+        drawText(renderer, "FLANGE", 130, 202, {158, 220, 255, 255});
+        drawText(renderer, "COMP", 220, 202, {158, 220, 255, 255});
+        drawText(renderer, "DIST", 314, 202, {158, 220, 255, 255});
+        fillRect(renderer, 30, 224, 104, 12, {33, 39, 61, 255});
+        fillRect(renderer, 148, 224, 104, 12, {33, 39, 61, 255});
+        fillRect(renderer, 266, 224, 104, 12, {33, 39, 61, 255});
+        drawText(renderer, "PLAY", 67, 228, {158, 220, 255, 255});
+        drawText(renderer, "UNDO", 180, 228, {158, 220, 255, 255});
+        drawText(renderer, "CLOSE", 295, 228, {158, 220, 255, 255});
     }
     if (state.echoPopupOpen) {
-        fillRect(renderer, 52, 52, 296, 132, {8, 12, 22, 255});
-        fillRect(renderer, 56, 56, 288, 16, {45, 55, 82, 255});
-        drawText(renderer, "ECHO PARAMETERS", 66, 61, {158, 220, 255, 255});
-        drawText(renderer, "TIME " + std::to_string(state.echoTimeMs) + "MS", 70, 88,
-            {92, 211, 143, 255});
-        drawText(renderer, "POWER " + std::to_string(state.echoPower).substr(0, 4), 70, 104,
-            {92, 211, 143, 255});
-        drawText(renderer, "SEMICOLON / QUOTE: TIME", 70, 126, {180, 190, 210, 255});
-        drawText(renderer, "COMMA / PERIOD: POWER", 70, 140, {180, 190, 210, 255});
-        drawText(renderer, "CTRL FINE  SHIFT COARSE", 70, 154, {180, 190, 210, 255});
-        drawText(renderer, "ENTER OR SPACE: APPLY + PLAY", 70, 168, {245, 157, 76, 255});
-        drawText(renderer, "ESCAPE: CANCEL", 70, 182, {180, 190, 210, 255});
+        fillRect(renderer, 0, 0, 400, 240, {8, 12, 22, 255});
+        fillRect(renderer, 20, 12, 360, 24, {45, 55, 82, 255});
+        drawText(renderer, "ECHO", 32, 19, {158, 220, 255, 255});
     }
-    if (state.flangerPopupOpen) {
-        fillRect(renderer, 42, 42, 316, 166, {8, 12, 22, 255});
-        fillRect(renderer, 46, 46, 308, 16, {45, 55, 82, 255});
-        drawText(renderer, "FLANGER PARAMETERS", 56, 51, {158, 220, 255, 255});
-        drawText(renderer, "DELAY " + std::to_string(state.flangerDelayMs) + "MS", 58, 78, {92, 211, 143, 255});
-        drawText(renderer, "DEPTH " + std::to_string(state.flangerDepthMs).substr(0, 4) + "MS", 190, 78, {92, 211, 143, 255});
-        drawText(renderer, "RATE " + std::to_string(state.flangerRateHz).substr(0, 4) + "HZ", 58, 96, {92, 211, 143, 255});
-        drawText(renderer, "FEEDBACK " + std::to_string(state.flangerFeedback).substr(0, 4), 190, 96, {92, 211, 143, 255});
-        drawText(renderer, "A/Z DELAY  S/X DEPTH", 58, 122, {180, 190, 210, 255});
-        drawText(renderer, "D/C RATE  F/V FEEDBACK", 58, 138, {180, 190, 210, 255});
-        drawText(renderer, "CTRL FINE  SHIFT COARSE", 58, 154, {180, 190, 210, 255});
-        drawText(renderer, "SPACE PREVIEW  ENTER APPLY", 58, 172, {245, 157, 76, 255});
-        drawText(renderer, "ESCAPE CANCEL", 58, 188, {180, 190, 210, 255});
+    if (state.flangerPopupOpen || state.compressorPopupOpen || state.distortionPopupOpen ||
+        state.reversePopupOpen || state.timeStretchPopupOpen ||
+        state.fadeInPopupOpen || state.fadeOutPopupOpen) {
+        fillRect(renderer, 0, 0, 400, 240, {8, 12, 22, 255});
+        fillRect(renderer, 20, 12, 360, 24, {45, 55, 82, 255});
+        const char* title = state.flangerPopupOpen ? "FLANGER" :
+            state.compressorPopupOpen ? "COMPRESSOR" :
+            state.distortionPopupOpen ? "DISTORTION" :
+            state.reversePopupOpen ? "REVERSE" :
+            state.timeStretchPopupOpen ? "TIME STRETCH" :
+            state.fadeInPopupOpen ? "FADE IN" : "FADE OUT";
+        drawText(renderer, title, 32, 19, {158, 220, 255, 255});
     }
-    if (state.compressorPopupOpen) {
-        fillRect(renderer, 40, 42, 320, 150, {8, 12, 22, 255});
-        drawText(renderer, "COMPRESSOR PARAMETERS", 52, 52, {158, 220, 255, 255});
-        drawText(renderer, "THRESHOLD " + std::to_string(static_cast<int>(state.compressorThreshold)) + "DB", 54, 82, {92, 211, 143, 255});
-        drawText(renderer, "RATIO " + std::to_string(state.compressorRatio).substr(0, 4), 54, 98, {92, 211, 143, 255});
-        drawText(renderer, "MAKEUP " + std::to_string(state.compressorMakeup).substr(0, 4), 54, 114, {92, 211, 143, 255});
-        drawText(renderer, "Q/A THRESHOLD  W/S RATIO", 54, 136, {180, 190, 210, 255});
-        drawText(renderer, "E/D MAKEUP  SPACE PREVIEW", 54, 152, {180, 190, 210, 255});
-        drawText(renderer, "ENTER APPLY  ESCAPE CANCEL", 54, 174, {245, 157, 76, 255});
+    if (state.echoPopupOpen || state.flangerPopupOpen || state.compressorPopupOpen ||
+        state.distortionPopupOpen || state.reversePopupOpen ||
+        state.timeStretchPopupOpen || state.fadeInPopupOpen || state.fadeOutPopupOpen) {
+        std::vector<std::string> rows;
+        if (state.echoPopupOpen) {
+            rows = {"TIME " + std::to_string(state.echoTimeMs) + "MS",
+                "POWER " + std::to_string(state.echoPower).substr(0, 4)};
+        } else if (state.flangerPopupOpen) {
+            rows = {"DELAY " + std::to_string(state.flangerDelayMs) + "MS",
+                "DEPTH " + std::to_string(state.flangerDepthMs).substr(0, 4) + "MS",
+                "RATE " + std::to_string(state.flangerRateHz).substr(0, 4) + "HZ",
+                "FEEDBACK " + std::to_string(state.flangerFeedback).substr(0, 4)};
+        } else if (state.compressorPopupOpen) {
+            rows = {"THRESHOLD " + std::to_string(static_cast<int>(state.compressorThreshold)) + "DB",
+                "RATIO " + std::to_string(state.compressorRatio).substr(0, 4),
+                "MAKEUP " + std::to_string(state.compressorMakeup).substr(0, 4)};
+        } else if (state.distortionPopupOpen) {
+            rows = {"DRIVE " + std::to_string(state.distortionDrive).substr(0, 4),
+                "MIX " + std::to_string(state.distortionMix).substr(0, 4)};
+        } else if (state.reversePopupOpen) {
+            rows = {"BLEND " + std::to_string(state.reverseMix).substr(0, 4)};
+        } else if (state.timeStretchPopupOpen) {
+            rows = {"RATIO " + std::to_string(state.timeStretchRatio).substr(0, 4)};
+        } else {
+            rows = {"DURATION " + std::to_string(
+                state.fadeInPopupOpen ? state.fadeInMs : state.fadeOutMs) + "MS"};
+        }
+        for (size_t row = 0; row < rows.size(); ++row) {
+            const int y = 48 + static_cast<int>(row) * 30;
+            fillRect(renderer, 20, y, 360, 24, {19, 27, 43, 255});
+            fillRect(renderer, 28, y + 4, 24, 16, {33, 76, 68, 255});
+            fillRect(renderer, 348, y + 4, 24, 16, {76, 45, 45, 255});
+            drawText(renderer, "-", 37, y + 9, {158, 220, 255, 255});
+            drawText(renderer, "+", 357, y + 9, {245, 157, 76, 255});
+            drawText(renderer, rows[row], 68, y + 9, {92, 211, 143, 255});
+        }
+        drawText(renderer, "TOUCH - OR + TO CHANGE", 20, 174, {180, 190, 210, 255});
     }
-    if (state.distortionPopupOpen) {
-        fillRect(renderer, 40, 42, 320, 134, {8, 12, 22, 255});
-        drawText(renderer, "DISTORTION PARAMETERS", 52, 52, {158, 220, 255, 255});
-        drawText(renderer, "DRIVE " + std::to_string(state.distortionDrive).substr(0, 4), 54, 82, {92, 211, 143, 255});
-        drawText(renderer, "MIX " + std::to_string(state.distortionMix).substr(0, 4), 54, 98, {92, 211, 143, 255});
-        drawText(renderer, "A/Z DRIVE  S/X MIX", 54, 122, {180, 190, 210, 255});
-        drawText(renderer, "SPACE PREVIEW  ENTER APPLY", 54, 138, {180, 190, 210, 255});
-        drawText(renderer, "ESCAPE CANCEL", 54, 154, {245, 157, 76, 255});
-    }
-    if (state.reversePopupOpen) {
-        fillRect(renderer, 48, 52, 304, 116, {8, 12, 22, 255});
-        drawText(renderer, "REVERSE PARAMETERS", 60, 62, {158, 220, 255, 255});
-        drawText(renderer, "BLEND " + std::to_string(state.reverseMix).substr(0, 4), 62, 88,
-            {92, 211, 143, 255});
-        drawText(renderer, "A/Z BLEND DOWN/UP", 62, 110, {180, 190, 210, 255});
-        drawText(renderer, "SPACE PREVIEW  ENTER APPLY", 62, 126, {180, 190, 210, 255});
-        drawText(renderer, "ESCAPE CANCEL", 62, 144, {245, 157, 76, 255});
-    }
-    if (state.timeStretchPopupOpen) {
-        fillRect(renderer, 42, 48, 316, 132, {8, 12, 22, 255});
-        drawText(renderer, "TIME STRETCH PARAMETERS", 54, 58, {158, 220, 255, 255});
-        drawText(renderer, "RATIO " + std::to_string(state.timeStretchRatio).substr(0, 4), 58, 86,
-            {92, 211, 143, 255});
-        drawText(renderer, "A/Z RATIO DOWN/UP", 58, 108, {180, 190, 210, 255});
-        drawText(renderer, "SPACE PREVIEW  ENTER APPLY", 58, 124, {180, 190, 210, 255});
-        drawText(renderer, "ESCAPE CANCEL", 58, 142, {245, 157, 76, 255});
-    }
-    if (state.fadeInPopupOpen || state.fadeOutPopupOpen) {
-        const bool fadeIn = state.fadeInPopupOpen;
-        fillRect(renderer, 48, 58, 304, 116, {8, 12, 22, 255});
-        fillRect(renderer, 52, 62, 296, 16, {45, 55, 82, 255});
-        drawText(renderer, fadeIn ? "FADE IN PARAMETERS" : "FADE OUT PARAMETERS",
-            62, 67, {158, 220, 255, 255});
-        drawText(renderer, "DURATION " + std::to_string(fadeIn ? state.fadeInMs : state.fadeOutMs) + "MS",
-            64, 94, {92, 211, 143, 255});
-        drawText(renderer, "A/Z DURATION DOWN/UP", 64, 116, {180, 190, 210, 255});
-        drawText(renderer, "CTRL FINE  SHIFT COARSE", 64, 132, {180, 190, 210, 255});
-        drawText(renderer, "SPACE PREVIEW  ENTER APPLY", 64, 148, {245, 157, 76, 255});
-        drawText(renderer, "ESCAPE CANCEL", 64, 164, {180, 190, 210, 255});
+    if (state.echoPopupOpen || state.flangerPopupOpen || state.compressorPopupOpen ||
+        state.distortionPopupOpen || state.reversePopupOpen ||
+        state.timeStretchPopupOpen || state.fadeInPopupOpen || state.fadeOutPopupOpen) {
+        fillRect(renderer, 20, 198, 112, 30, {33, 76, 68, 255});
+        fillRect(renderer, 144, 198, 112, 30, {45, 55, 82, 255});
+        fillRect(renderer, 268, 198, 112, 30, {76, 45, 45, 255});
+        drawText(renderer, "PREVIEW", 43, 209, {158, 220, 255, 255});
+        drawText(renderer, "APPLY", 180, 209, {158, 220, 255, 255});
+        drawText(renderer, "CANCEL", 293, 209, {245, 157, 76, 255});
     }
 
 }
@@ -437,7 +593,31 @@ int main(int argc, char** argv) {
             if (event.type == SDL_QUIT) {
                 state.running.store(false);
             } else if (event.type == SDL_KEYDOWN && event.key.repeat == 0) {
-                if (state.settingsOpen && event.key.keysym.sym == SDLK_ESCAPE) {
+                if (state.kitOpen && event.key.keysym.sym == SDLK_ESCAPE) {
+                    state.kitOpen = false;
+                } else if (state.kitOpen && (event.key.keysym.sym == SDLK_UP ||
+                    event.key.keysym.sym == SDLK_DOWN)) {
+                    if (!state.kitNames.empty()) {
+                        const int direction = event.key.keysym.sym == SDLK_UP ? -1 : 1;
+                        const int count = static_cast<int>(state.kitNames.size());
+                        state.kitSelection = static_cast<size_t>(
+                            (static_cast<int>(state.kitSelection) + direction + count) % count);
+                    }
+                } else if (state.kitOpen && event.key.keysym.sym == SDLK_s) {
+                    if (!state.kitNames.empty()) {
+                        saveKit(state, state.kitNames[state.kitSelection]);
+                    }
+                } else if (state.kitOpen && event.key.keysym.sym == SDLK_n) {
+                    createKit(state);
+                } else if (state.kitOpen && event.key.keysym.sym == SDLK_RETURN) {
+                    if (!state.kitNames.empty()) {
+                        Mix_PauseAudio(1);
+                        loadKit(state, state.kitNames[state.kitSelection]);
+                        Mix_PauseAudio(0);
+                    }
+                } else if (state.kitOpen) {
+                    continue;
+                } else if (state.settingsOpen && event.key.keysym.sym == SDLK_ESCAPE) {
                     state.settingsOpen = false;
                 } else if (state.settingsOpen && event.key.keysym.sym == SDLK_TAB) {
                     state.settingsMidiFocus = !state.settingsMidiFocus;
@@ -478,6 +658,10 @@ int main(int argc, char** argv) {
                 } else if (event.key.keysym.sym == SDLK_g && !state.editorOpen &&
                     !state.browserOpen && !state.settingsOpen) {
                     state.graphicsEffectsEnabled = !state.graphicsEffectsEnabled;
+                } else if (event.key.keysym.sym == SDLK_k && !state.editorOpen &&
+                    !state.browserOpen && !state.settingsOpen) {
+                    refreshKits(state);
+                    state.kitOpen = true;
                 } else if (event.key.keysym.sym == SDLK_ESCAPE && state.timeStretchPopupOpen) {
                     state.voices.samples[state.selectedPad.load()] = state.timeStretchSource;
                     if (!state.undoStack.empty()) state.undoStack.pop_back();
@@ -821,18 +1005,326 @@ int main(int argc, char** argv) {
                     const float delta = event.key.keysym.sym == SDLK_UP ? 0.05f : -0.05f;
                     state.pitch[pad] = std::clamp(state.pitch[pad] + delta, 0.5f, 2.0f);
                 }
-            } else if (event.type == SDL_MOUSEBUTTONDOWN) {
+            } else if (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_FINGERDOWN) {
                 int width = 0;
                 int height = 0;
                 SDL_GetRendererOutputSize(renderer, &width, &height);
-                const int x = event.button.x * kRenderWidth / std::max(width, 1);
-                const int y = event.button.y * kRenderHeight / std::max(height, 1);
+                const int inputX = event.type == SDL_MOUSEBUTTONDOWN
+                    ? event.button.x : static_cast<int>(event.tfinger.x * width);
+                const int inputY = event.type == SDL_MOUSEBUTTONDOWN
+                    ? event.button.y : static_cast<int>(event.tfinger.y * height);
+                const int x = inputX * kRenderWidth / std::max(width, 1);
+                const int y = inputY * kRenderHeight / std::max(height, 1);
+                if (state.echoPopupOpen || state.flangerPopupOpen ||
+                    state.compressorPopupOpen || state.distortionPopupOpen ||
+                    state.reversePopupOpen || state.timeStretchPopupOpen ||
+                    state.fadeInPopupOpen || state.fadeOutPopupOpen) {
+                    if (y >= 48 && y < 178) {
+                        const bool increase = x >= 200;
+                        const float direction = increase ? 1.0f : -1.0f;
+                        if (state.echoPopupOpen) {
+                            if (y < 78) state.echoTimeMs = std::clamp(
+                                state.echoTimeMs + static_cast<int>(direction * 10), 1, 2000);
+                            else state.echoPower = std::clamp(state.echoPower + direction * 0.05f, 0.0f, 0.95f);
+                        } else if (state.flangerPopupOpen) {
+                            if (y < 78) state.flangerDelayMs = std::clamp(
+                                state.flangerDelayMs + static_cast<int>(direction), 1, 50);
+                            else if (y < 108) state.flangerDepthMs = std::clamp(
+                                state.flangerDepthMs + direction, 0.0f, 15.0f);
+                            else if (y < 138) state.flangerRateHz = std::clamp(
+                                state.flangerRateHz + direction * 0.1f, 0.05f, 10.0f);
+                            else state.flangerFeedback = std::clamp(
+                                state.flangerFeedback + direction * 0.05f, 0.0f, 0.95f);
+                        } else if (state.compressorPopupOpen) {
+                            if (y < 78) state.compressorThreshold = std::clamp(
+                                state.compressorThreshold + direction, -60.0f, 0.0f);
+                            else if (y < 108) state.compressorRatio = std::clamp(
+                                state.compressorRatio + direction, 1.0f, 20.0f);
+                            else state.compressorMakeup = std::clamp(
+                                state.compressorMakeup + direction * 0.1f, 0.1f, 4.0f);
+                        } else if (state.distortionPopupOpen) {
+                            if (y < 78) state.distortionDrive = std::clamp(
+                                state.distortionDrive + direction * 0.1f, 1.0f, 20.0f);
+                            else state.distortionMix = std::clamp(
+                                state.distortionMix + direction * 0.05f, 0.0f, 1.0f);
+                        } else if (state.reversePopupOpen) {
+                            state.reverseMix = std::clamp(state.reverseMix + direction * 0.05f, 0.0f, 1.0f);
+                        } else if (state.timeStretchPopupOpen) {
+                            state.timeStretchRatio = std::clamp(state.timeStretchRatio + direction * 0.1f, 0.25f, 4.0f);
+                        } else if (state.fadeInPopupOpen) {
+                            state.fadeInMs = std::clamp(state.fadeInMs + static_cast<int>(direction * 10), 1, 10000);
+                        } else {
+                            state.fadeOutMs = std::clamp(state.fadeOutMs + static_cast<int>(direction * 10), 1, 10000);
+                        }
+                    } else if (y >= 190) {
+                        if (x < 130) {
+                            Mix_PauseAudio(1);
+                            if (state.echoPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.echoSource;
+                                applyEchoToSample(state, state.voices.samples[state.selectedPad.load()]);
+                            } else if (state.flangerPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.flangerSource;
+                                applyFlangerToSample(state, state.voices.samples[state.selectedPad.load()]);
+                            } else if (state.compressorPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.compressorSource;
+                                applyCompressorToSample(state, state.voices.samples[state.selectedPad.load()]);
+                            } else if (state.distortionPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.distortionSource;
+                                applyDistortionToSample(state, state.voices.samples[state.selectedPad.load()]);
+                            } else if (state.reversePopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.reverseSource;
+                                applyReverseToSample(state, state.voices.samples[state.selectedPad.load()]);
+                            } else if (state.timeStretchPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.timeStretchSource;
+                                applyTimeStretchToSample(state, state.voices.samples[state.selectedPad.load()]);
+                            } else if (state.fadeInPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.fadeInSource;
+                                applyFadeInToSample(state, state.voices.samples[state.selectedPad.load()]);
+                            } else {
+                                state.voices.samples[state.selectedPad.load()] = state.fadeOutSource;
+                                applyFadeOutToSample(state, state.voices.samples[state.selectedPad.load()]);
+                            }
+                            Mix_PauseAudio(0);
+                            triggerPad(state, state.selectedPad.load());
+                        } else if (x < 260) {
+                            Mix_PauseAudio(1);
+                            if (state.echoPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.echoSource;
+                                applyEchoToSample(state, state.voices.samples[state.selectedPad.load()]);
+                                state.echoPopupOpen = false;
+                            } else if (state.flangerPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.flangerSource;
+                                applyFlangerToSample(state, state.voices.samples[state.selectedPad.load()]);
+                                state.flangerPopupOpen = false;
+                            } else if (state.compressorPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.compressorSource;
+                                applyCompressorToSample(state, state.voices.samples[state.selectedPad.load()]);
+                                state.compressorPopupOpen = false;
+                            } else if (state.distortionPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.distortionSource;
+                                applyDistortionToSample(state, state.voices.samples[state.selectedPad.load()]);
+                                state.distortionPopupOpen = false;
+                            } else if (state.reversePopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.reverseSource;
+                                applyReverseToSample(state, state.voices.samples[state.selectedPad.load()]);
+                                state.reversePopupOpen = false;
+                            } else if (state.timeStretchPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.timeStretchSource;
+                                applyTimeStretchToSample(state, state.voices.samples[state.selectedPad.load()]);
+                                state.timeStretchPopupOpen = false;
+                            } else if (state.fadeInPopupOpen) {
+                                state.voices.samples[state.selectedPad.load()] = state.fadeInSource;
+                                applyFadeInToSample(state, state.voices.samples[state.selectedPad.load()]);
+                                state.fadeInPopupOpen = false;
+                            } else {
+                                state.voices.samples[state.selectedPad.load()] = state.fadeOutSource;
+                                applyFadeOutToSample(state, state.voices.samples[state.selectedPad.load()]);
+                                state.fadeOutPopupOpen = false;
+                            }
+                            Mix_PauseAudio(0);
+                        } else {
+                            state.voices.samples[state.selectedPad.load()] =
+                                state.echoPopupOpen ? state.echoSource :
+                                state.flangerPopupOpen ? state.flangerSource :
+                                state.compressorPopupOpen ? state.compressorSource :
+                                state.distortionPopupOpen ? state.distortionSource :
+                                state.reversePopupOpen ? state.reverseSource :
+                                state.timeStretchPopupOpen ? state.timeStretchSource :
+                                state.fadeInPopupOpen ? state.fadeInSource : state.fadeOutSource;
+                            state.echoPopupOpen = state.flangerPopupOpen =
+                                state.compressorPopupOpen = state.distortionPopupOpen =
+                                state.reversePopupOpen = state.timeStretchPopupOpen =
+                                state.fadeInPopupOpen = state.fadeOutPopupOpen = false;
+                            if (!state.undoStack.empty()) state.undoStack.pop_back();
+                        }
+                    }
+                } else if (state.kitOpen) {
+                    if (x >= 50 && x < 350 && y >= 70 && y < 166 &&
+                        !state.kitNames.empty()) {
+                        const size_t row = static_cast<size_t>((y - 70) / 16);
+                        if (row < state.kitNames.size()) state.kitSelection = row;
+                    } else if (x >= 22 && x < 104 && y >= 188 && y < 212) {
+                        if (!state.kitNames.empty()) saveKit(state, state.kitNames[state.kitSelection]);
+                    } else if (x >= 110 && x < 192 && y >= 188 && y < 212) {
+                        if (!state.kitNames.empty()) {
+                            Mix_PauseAudio(1);
+                            loadKit(state, state.kitNames[state.kitSelection]);
+                            Mix_PauseAudio(0);
+                        }
+                    } else if (x >= 198 && x < 280 && y >= 188 && y < 212) {
+                        createKit(state);
+                    } else if (x >= 286 && x < 378 && y >= 188 && y < 212) {
+                        state.kitOpen = false;
+                    }
+                } else if (state.settingsOpen) {
+                    if (x >= 30 && x < 195 && y >= 70 && y < 140 &&
+                        !state.audioDevices.empty()) {
+                        const size_t row = static_cast<size_t>((y - 70) / 16);
+                        if (row < state.audioDevices.size()) {
+                            state.audioDeviceSelection = row;
+                            state.settingsMidiFocus = false;
+                        }
+                    } else if (x >= 195 && x < 380 && y >= 70 && y < 140 &&
+                        !state.midiDevices.empty()) {
+                        const size_t row = static_cast<size_t>((y - 70) / 16);
+                        if (row < state.midiDevices.size()) {
+                            state.midiDeviceSelection = row;
+                            state.settingsMidiFocus = true;
+                        }
+                    } else if (x >= 205 && y >= 176 && y < 210) {
+                        state.settingsOpen = false;
+                    } else if (y >= 165 && y < 205) {
+                        if (state.settingsMidiFocus) {
+                            midiInput.connectIndex(state.midiDeviceSelection);
+                        } else if (!state.audioDevices.empty()) {
+                            Mix_PauseAudio(1);
+                            Mix_SetPostMix(nullptr, nullptr);
+                            Mix_CloseAudio();
+                            Mix_OpenAudioDevice(44100, AUDIO_F32SYS, 2, 256,
+                                state.audioDevices[state.audioDeviceSelection].c_str(), 0);
+                            Mix_SetPostMix(postMixCallback, &state);
+                            Mix_PauseAudio(0);
+                        }
+                    }
+                } else if (state.browserOpen) {
+                    if (x >= 30 && x < 370 && y >= 55 && y < 190 &&
+                        !state.browserFiles.empty()) {
+                        const size_t row = static_cast<size_t>((y - 55) / 22);
+                        const size_t first = state.browserSelection > 5
+                            ? state.browserSelection - 5 : 0;
+                        if (first + row < state.browserFiles.size()) {
+                            state.browserSelection = first + row;
+                            if (event.type == SDL_FINGERDOWN) {
+                                Mix_PauseAudio(1);
+                                loadSample(state.browserFiles[state.browserSelection],
+                                    state.voices.samples[state.selectedPad.load()]);
+                                state.undoStack.clear();
+                                Mix_PauseAudio(0);
+                                state.browserOpen = false;
+                            }
+                        }
+                    } else if (y >= 188 && x < 200 && !state.browserFiles.empty()) {
+                        Mix_PauseAudio(1);
+                        loadSample(state.browserFiles[state.browserSelection],
+                            state.voices.samples[state.selectedPad.load()]);
+                        state.undoStack.clear();
+                        Mix_PauseAudio(0);
+                        state.browserOpen = false;
+                    } else if (y >= 188) {
+                        state.browserOpen = false;
+                    }
+                } else if (state.editorOpen) {
+                    const int pad = state.selectedPad.load();
+                    auto moveTrim = [&](int direction) {
+                        const int size = static_cast<int>(state.voices.samples[pad].stereo.size());
+                        const int step = 441;
+                        if (state.editorAdjustEnd) {
+                            state.editorEnd = std::clamp(state.editorEnd + direction * step,
+                                state.editorStart + 2, size);
+                        } else {
+                            state.editorStart = std::clamp(state.editorStart + direction * step,
+                                0, state.editorEnd - 2);
+                        }
+                    };
+                    if (y >= 56 && y < 132) {
+                        const int frames = static_cast<int>(
+                            state.voices.samples[pad].stereo.size() / 2);
+                        const int frame = std::clamp((x - 32) * frames / 336, 0, frames);
+                        if (state.editorAdjustEnd) {
+                            state.editorEnd = std::max(state.editorStart + 2, frame * 2);
+                        } else {
+                            state.editorStart = std::min(frame * 2, state.editorEnd - 2);
+                        }
+                    } else if (y >= 140 && y < 158) {
+                        state.editorAdjustEnd = x >= 200;
+                    } else if (y >= 158 && y < 176) {
+                        moveTrim(x < 200 ? -1 : 1);
+                    } else if (y >= 176 && y < 194) {
+                        Mix_PauseAudio(1);
+                        if (x < 85) applyEditor(state, 't');
+                        else if (x < 165) applyEditor(state, 'n');
+                        else if (x < 250) {
+                            state.fadeInSource = state.voices.samples[pad];
+                            saveUndo(state);
+                            state.fadeInPopupOpen = true;
+                        } else {
+                            state.fadeOutSource = state.voices.samples[pad];
+                            saveUndo(state);
+                            state.fadeOutPopupOpen = true;
+                        }
+                        Mix_PauseAudio(0);
+                    } else if (y >= 194 && y < 220) {
+                        if (x < 92) {
+                            state.echoSource = state.voices.samples[pad];
+                            saveUndo(state);
+                            state.echoPopupOpen = true;
+                        } else if (x < 184) {
+                            state.flangerSource = state.voices.samples[pad];
+                            saveUndo(state);
+                            state.flangerPopupOpen = true;
+                        } else if (x < 276) {
+                            state.compressorSource = state.voices.samples[pad];
+                            saveUndo(state);
+                            state.compressorPopupOpen = true;
+                        } else if (x < 368) {
+                            state.distortionSource = state.voices.samples[pad];
+                            saveUndo(state);
+                            state.distortionPopupOpen = true;
+                        }
+                    } else if (y >= 220 && x < 140) {
+                        triggerPad(state, state.selectedPad.load());
+                    } else if (y >= 220 && x < 260) {
+                        undoEditor(state);
+                    } else if (y >= 220) {
+                        state.editorOpen = false;
+                    } else if (y >= 178 && y < 198 && x < 200) {
+                        state.fadeInSource = state.voices.samples[state.selectedPad.load()];
+                        saveUndo(state);
+                        state.fadeInPopupOpen = true;
+                    } else if (y >= 178 && y < 198) {
+                        state.fadeOutSource = state.voices.samples[state.selectedPad.load()];
+                        saveUndo(state);
+                        state.fadeOutPopupOpen = true;
+                    } else if (y >= 198 && y < 218) {
+                        if (x < 100) {
+                            state.echoSource = state.voices.samples[state.selectedPad.load()];
+                            saveUndo(state);
+                            state.echoPopupOpen = true;
+                        } else if (x < 200) {
+                            state.flangerSource = state.voices.samples[state.selectedPad.load()];
+                            saveUndo(state);
+                            state.flangerPopupOpen = true;
+                        } else if (x < 300) {
+                            state.compressorSource = state.voices.samples[state.selectedPad.load()];
+                            saveUndo(state);
+                            state.compressorPopupOpen = true;
+                        } else {
+                            state.distortionSource = state.voices.samples[state.selectedPad.load()];
+                            saveUndo(state);
+                            state.distortionPopupOpen = true;
+                        }
+                    }
+                } else if (x >= 18 && x < 84 && y >= 198) {
+                    state.browserOpen = true;
+                    refreshBrowser(state);
+                } else if (x >= 91 && x < 157 && y >= 198) {
+                    state.editorOpen = true;
+                    resetEditor(state);
+                } else if (x >= 164 && x < 232 && y >= 198) {
+                    state.settingsOpen = true;
+                } else if (x >= 237 && x < 303 && y >= 198) {
+                    refreshKits(state);
+                    state.kitOpen = true;
+                } else if (x >= 310 && y >= 198) {
+                    state.graphicsEffectsEnabled = !state.graphicsEffectsEnabled;
+                } else {
                 for (int i = 0; i < kPadsPerPage; ++i) {
                     const int padX = 18 + (i % 4) * 92;
                     const int padY = 42 + (i / 4) * 76;
                     if (x >= padX && x < padX + 84 && y >= padY && y < padY + 66) {
                         triggerPad(state, state.page * kPadsPerPage + i);
                     }
+                }
                 }
             }
         }
